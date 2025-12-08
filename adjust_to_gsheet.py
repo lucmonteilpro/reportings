@@ -192,7 +192,7 @@ def pull_from_adjust(
         "dimensions": dimensions,
         "metrics": metrics,
         "readable_names": True,
-        "utc_offset": "+02:00",
+        "utc_offset": "+01:00",  # Paris timezone (UTC+1)
         "attribution_source": "first",  # ✅ CORRIGÉ : utilise First attribution (pas Dynamic)
         "attribution_type": "all",  # Type d'attribution (all/click/impression)
         "currency": "EUR",
@@ -288,15 +288,15 @@ def transform_data(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     # CUSTOM CPI pour LALALAB
     # =========================================================================
     if config.get("custom_cpi") and len(config["custom_cpi"]) > 0:
-        # Initialise CPI et Ad spend
+        # Initialise CPI et Adspend
         tmp['CPI'] = 0.0
-        tmp['Ad spend'] = 0.0
+        tmp['Adspend'] = 0.0
         
         # Applique les custom CPI par pays
         for country, cpi in config["custom_cpi"].items():
             print(f"   Custom CPI {country}: {cpi}€")
             tmp.loc[tmp["Country"] == country, "CPI"] = cpi
-            tmp.loc[tmp["Country"] == country, "Ad spend"] = (
+            tmp.loc[tmp["Country"] == country, "Adspend"] = (
                 tmp.loc[tmp["Country"] == country, "Installs"].astype(float) * cpi
             )
     
@@ -311,7 +311,7 @@ def transform_data(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     if config.get("agg_columns"):
         # Colonnes numériques à sommer (SANS CPI qui sera recalculé)
         NUMERIC_COLS_TO_SUM = [
-            "Impressions", "Clicks", "Installs", "Ad spend",
+            "Impressions", "Clicks", "Installs", "Adspend",
             "In-app revenue", "0D All revenue total", "7D All revenue total", "30D All revenue total",
             "all_revenue_total_d0", "all_revenue_total_d7", "all_revenue_total_d30"
         ]
@@ -336,9 +336,9 @@ def transform_data(df: pd.DataFrame, config: dict) -> pd.DataFrame:
         tmp = tmp.groupby(agg_cols, as_index=False)[numeric_cols].sum()
         
         # ✅ Recalcule CPI après l'agrégation
-        if "Ad spend" in tmp.columns and "Installs" in tmp.columns:
+        if "Adspend" in tmp.columns and "Installs" in tmp.columns:
             tmp["CPI"] = tmp.apply(
-                lambda row: row["Ad spend"] / row["Installs"] if row["Installs"] > 0 else 0, 
+                lambda row: row["Adspend"] / row["Installs"] if row["Installs"] > 0 else 0, 
                 axis=1
             )
         
@@ -363,7 +363,7 @@ def transform_data(df: pd.DataFrame, config: dict) -> pd.DataFrame:
                 
                 # Colonnes numériques à sommer (SANS CPI qui sera recalculé)
                 numeric_cols = [c for c in tmp_zero_installs.columns 
-                               if c in ["Impressions", "Clicks", "Installs", "Ad spend",
+                               if c in ["Impressions", "Clicks", "Installs", "Adspend",
                                        "In-app revenue", "0D All revenue total", 
                                        "7D All revenue total", "30D All revenue total"] or 
                                   'first_purchase' in c.lower() or 'first purchase' in c.lower()]
@@ -372,7 +372,7 @@ def transform_data(df: pd.DataFrame, config: dict) -> pd.DataFrame:
                 tmp_zero_grouped = tmp_zero_installs.groupby(groupby_cols, as_index=False)[numeric_cols].sum()
                 
                 # ✅ Recalcule CPI après le regroupement
-                if "Ad spend" in tmp_zero_grouped.columns and "Installs" in tmp_zero_grouped.columns:
+                if "Adspend" in tmp_zero_grouped.columns and "Installs" in tmp_zero_grouped.columns:
                     tmp_zero_grouped["CPI"] = 0  # CPI = 0 pour les lignes installs=0
                 
                 # Ajoute les colonnes manquantes avec valeur "other"
@@ -397,7 +397,7 @@ def transform_data(df: pd.DataFrame, config: dict) -> pd.DataFrame:
             "Campaign (attribution)",
             "Adgroup (attribution)",
             "Creative (attribution)",
-            "Ad spend",
+            "Adspend",
             "Installs",
             "Impressions",
             "Clicks",
@@ -448,6 +448,166 @@ def push_to_gsheet(df: pd.DataFrame, config: dict, gc: gspread.Client) -> str:
         
     except Exception as e:
         print(f"❌ Erreur push: {e}")
+        raise
+
+
+def update_revenues_only(
+    df_new: pd.DataFrame, 
+    config: dict, 
+    gc: gspread.Client,
+    rolling_days: int = 30
+) -> str:
+    """
+    Met à jour UNIQUEMENT les colonnes revenues sur les N derniers jours.
+    Garde toutes les autres données existantes intactes.
+    
+    Args:
+        df_new: DataFrame avec les nouvelles données des N derniers jours
+        config: Configuration du client
+        gc: Client gspread authentifié
+        rolling_days: Nombre de jours à mettre à jour (défaut: 30)
+    
+    Returns:
+        URL du sheet
+    """
+    print(f"📤 Mise à jour partielle revenues (derniers {rolling_days} jours)...")
+    
+    sheet_id = config["sheet_id"]
+    sheet_name = config["sheet_name"]
+    
+    try:
+        wks = gc.open_by_key(sheet_id)
+        sheet = wks.worksheet(sheet_name)
+        
+        # 1. Lire les données existantes du Google Sheet
+        print("   📥 Lecture des données existantes...")
+        df_existing = pd.DataFrame(sheet.get_all_records())
+        
+        if df_existing.empty:
+            # Si le sheet est vide, push complet
+            print("   ⚠️  Sheet vide, push complet à la place")
+            return push_to_gsheet(df_new, config, gc)
+        
+        print(f"   📊 Données existantes: {len(df_existing)} lignes")
+        
+        # 2. Convertir les dates en datetime
+        df_existing['Day (date)'] = pd.to_datetime(df_existing['Day (date)'])
+        df_new['Day (date)'] = pd.to_datetime(df_new['Day (date)'])
+        
+        # 3. Calculer la date limite (aujourd'hui - rolling_days)
+        from datetime import date, timedelta
+        cutoff_date = pd.to_datetime(date.today() - timedelta(days=rolling_days))
+        print(f"   📅 Mise à jour des revenues depuis: {cutoff_date.strftime('%Y-%m-%d')}")
+        
+        # 4. Colonnes revenues à mettre à jour
+        revenue_cols = ['0D All revenue total', '7D All revenue total', '30D All revenue total']
+        # Vérifier quelles colonnes revenues existent
+        revenue_cols_to_update = [col for col in revenue_cols if col in df_existing.columns and col in df_new.columns]
+        
+        if not revenue_cols_to_update:
+            print("   ⚠️  Aucune colonne revenue trouvée, push complet")
+            return push_to_gsheet(df_new, config, gc)
+        
+        print(f"   💰 Colonnes à mettre à jour: {', '.join(revenue_cols_to_update)}")
+        
+        # 5. Créer les clés de jointure (toutes les dimensions sauf Day)
+        join_keys = [
+            'App', 'Month (date)', 'Week (date)', 'Day (date)', 
+            'Network (attribution)', 'Country',
+            'Campaign (attribution)', 'Adgroup (attribution)', 'Creative (attribution)'
+        ]
+        # Garder uniquement les clés qui existent dans les deux DataFrames
+        join_keys = [k for k in join_keys if k in df_existing.columns and k in df_new.columns]
+        
+        # 6. Séparer les données existantes : anciennes (> rolling_days) vs récentes (≤ rolling_days)
+        df_old = df_existing[df_existing['Day (date)'] < cutoff_date].copy()
+        df_recent_existing = df_existing[df_existing['Day (date)'] >= cutoff_date].copy()
+        
+        print(f"   📊 Données anciennes conservées: {len(df_old)} lignes")
+        print(f"   📊 Données récentes à mettre à jour: {len(df_recent_existing)} lignes")
+        print(f"   📊 Nouvelles données: {len(df_new)} lignes")
+        
+        # 7. Pour les données récentes : remplacer les revenues par les nouvelles valeurs
+        # Stratégie : On garde df_recent_existing et on met à jour seulement les colonnes revenues
+        
+        # Créer un identifiant unique pour chaque ligne
+        for df_temp in [df_recent_existing, df_new]:
+            df_temp['_merge_key'] = df_temp[join_keys].astype(str).agg('||'.join, axis=1)
+        
+        # Créer un dict des nouvelles revenues
+        revenue_dict = {}
+        for _, row in df_new.iterrows():
+            key = row['_merge_key']
+            revenue_dict[key] = {col: row[col] for col in revenue_cols_to_update}
+        
+        # Mettre à jour les revenues dans df_recent_existing
+        updated_count = 0
+        for idx, row in df_recent_existing.iterrows():
+            key = row['_merge_key']
+            if key in revenue_dict:
+                for col in revenue_cols_to_update:
+                    df_recent_existing.at[idx, col] = revenue_dict[key][col]
+                updated_count += 1
+        
+        print(f"   ✅ Revenues mises à jour: {updated_count} lignes")
+        
+        # 8. Ajouter les nouvelles lignes qui n'existaient pas
+        new_keys = set(df_new['_merge_key']) - set(df_recent_existing['_merge_key'])
+        df_truly_new = df_new[df_new['_merge_key'].isin(new_keys)].copy()
+        
+        # ✅ CORRECTION CRITIQUE : Retirer Ad spend et CPI des nouvelles lignes
+        # pour ne PAS écraser les valeurs existantes ou manuelles
+        if len(df_truly_new) > 0:
+            # Colonnes à garder : dimensions + revenues + événements (PAS Ad spend/CPI)
+            cols_to_keep = []
+            for col in df_truly_new.columns:
+                # Garder les dimensions (join_keys)
+                if col in join_keys:
+                    cols_to_keep.append(col)
+                # Garder les revenues
+                elif col in revenue_cols_to_update:
+                    cols_to_keep.append(col)
+                # Garder First Purchase
+                elif 'first' in col.lower() or 'purchase' in col.lower():
+                    cols_to_keep.append(col)
+                # Garder Installs, Clicks, Impressions
+                elif col in ['Installs', 'Clicks', 'Impressions', 'In-app revenue']:
+                    cols_to_keep.append(col)
+                # EXCLURE Ad spend et CPI
+                elif col not in ['Ad spend', 'CPI', '_merge_key']:
+                    cols_to_keep.append(col)
+            
+            df_truly_new = df_truly_new[cols_to_keep]
+            
+            # Ajouter Ad spend et CPI à 0 pour les nouvelles lignes
+            df_truly_new['Ad spend'] = 0
+            df_truly_new['CPI'] = 0
+            
+            print(f"   ➕ Nouvelles lignes ajoutées: {len(df_truly_new)} (Ad spend/CPI = 0)")
+        
+        # 9. Recombiner tout
+        # Supprimer la colonne _merge_key avant de combiner
+        for df_temp in [df_old, df_recent_existing, df_truly_new]:
+            if '_merge_key' in df_temp.columns:
+                df_temp.drop('_merge_key', axis=1, inplace=True)
+        
+        df_final = pd.concat([df_old, df_recent_existing, df_truly_new], ignore_index=True)
+        df_final = df_final.sort_values('Day (date)')
+        
+        print(f"   📊 Total final: {len(df_final)} lignes")
+        
+        # 10. Push le résultat final
+        sheet.clear()
+        set_with_dataframe(sheet, df_final)
+        
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+        print(f"✅ Mise à jour revenues réussie: {url}")
+        return url
+        
+    except Exception as e:
+        print(f"❌ Erreur mise à jour revenues: {e}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
