@@ -94,7 +94,7 @@ def load_lalalab_config(gc: gspread.Client, client_name: str) -> dict:
         "app_token": row.get('app_token', ''),
         "adjust_account_id": str(row.get('account_id', '')),
         "sheet_id": sheet_id,
-        "sheet_name": row.get('sheet_name', 'raw_ios'),
+        "sheet_name": "ios",  # ✅ MODIFIÉ : raw_ios → ios
         "custom_cpi": parse_custom_cpi(row.get('custom_cpi', '{}')),
         "countries": ['France', 'Germany', 'Italy'],
         "events": ['first purchase_events'],
@@ -410,7 +410,7 @@ def main():
     else:
         # Mode quotidien
         target_date = args.date or (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-        print(f"�� MODE: Push quotidien")
+        print(f"📅 MODE: Push quotidien")
         run_daily_pipeline(config, target_date, gc)
     
     print("\n🎉 Pipeline terminé !")

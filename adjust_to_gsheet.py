@@ -57,11 +57,12 @@ LALALAB_IOS_CONFIG = {
     "app_token": "vmu6fbf5yprt",  # ✅ App Token Lalalab iOS
     "adjust_account_id": "259",  # ✅ Account ID LALALAB - OBLIGATOIRE
     "sheet_id": "1slh8klvy5KfgUGxJz7yLJ5YKZmRPBMe59ViqsGEOU_Q",  # ✅ Nouveau Google Sheet
-    "sheet_name": "raw_ios",  # ✅ Onglet iOS
+    "sheet_name": "ios",  # ✅ Onglet iOS
     "start_date": "2025-01-01",
     "custom_cpi": {
         "France": 7.0,
-        "Germany": 5.0
+        "Germany": 5.0,
+        "Italy": 5.0
     },
     "agg_columns": [
         "App",
@@ -154,7 +155,8 @@ def pull_from_adjust(
     dimensions: str = "day,country,network,campaign,creative,adgroup",
     metrics: str = None,
     include_revenue: bool = False,
-    events: list = None  # ✅ AJOUTÉ : Liste d'événements (ex: ['first_purchase'])
+    events: list = None,  # ✅ AJOUTÉ : Liste d'événements (ex: ['first_purchase'])
+    store_id: str = None  # ✅ NOUVEAU : Store ID pour filtrer iOS/Android
 ) -> pd.DataFrame:
     """
     Pull les données depuis l'API Adjust.
@@ -168,6 +170,7 @@ def pull_from_adjust(
         metrics: Métriques à récupérer (si None, utilise les métriques par défaut)
         include_revenue: Si True, ajoute les métriques de revenue
         events: Liste d'événements à récupérer (ex: ['first_purchase'])
+        store_id: Store ID pour filtrer iOS/Android (ex: "1222993561")
     
     Returns:
         DataFrame avec les données Adjust
@@ -203,6 +206,11 @@ def pull_from_adjust(
     if adjust_account_id:
         params['adjust_account_id'] = adjust_account_id
         print(f"   Account ID: {adjust_account_id}")
+    
+    # ✅ NOUVEAU : Ajouter le store_id si fourni
+    if store_id:
+        params['store_id'] = store_id
+        print(f"   Store ID: {store_id}")
     
     headers = {
         "Authorization": f"Bearer {ADJUST_API_TOKEN}"
